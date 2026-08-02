@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://timbertrail.local/screentimeguardian/sync-snapshot.schema.json",
+  "title": "Screen Time Guardian P2P sync snapshot",
+  "type": "object",
+  "required": ["protocol_version", "device", "sessions"],
+  "properties": {
+    "protocol_version": { "type": "integer", "const": 1 },
+    "capabilities": {
+      "type": "array",
+      "items": { "type": "string" },
+      "uniqueItems": true
+    },
+    "device": {
+      "type": "object",
+      "required": ["device_id", "device_name", "platform", "app_version", "updated_at_utc"],
+      "properties": {
+        "device_id": { "type": "string", "minLength": 1 },
+        "device_name": { "type": "string" },
+        "platform": {
+          "type": "string",
+          "enum": ["macos", "ios", "ipados", "windows", "android", "unknown"]
+        },
+        "app_version": { "type": "string" },
+        "capabilities": {
+          "type": "array",
+          "items": { "type": "string" },
+          "uniqueItems": true
+        },
+        "updated_at_utc": { "type": "string", "format": "date-time" }
+      },
+      "additionalProperties": false
+    },
+    "cursor": {
+      "type": "object",
+      "properties": {
+        "since_updated_at_utc": { "type": ["string", "null"], "format": "date-time" }
+      },
+      "additionalProperties": false
+    },
+    "sessions": {
+      "type": "array",
+      "items": { "$ref": "screen-session.schema.json" }
+    },
+    "deleted_sessions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "deleted_by_device_id", "deleted_at_utc", "updated_at_utc"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "session_id": { "type": ["string", "null"] },
+          "device_id": { "type": ["string", "null"] },
+          "start_at_utc": { "type": ["string", "null"], "format": "date-time" },
+          "end_at_utc": { "type": ["string", "null"], "format": "date-time" },
+          "deleted_by_device_id": { "type": "string", "minLength": 1 },
+          "deleted_at_utc": { "type": "string", "format": "date-time" },
+          "updated_at_utc": { "type": "string", "format": "date-time" }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

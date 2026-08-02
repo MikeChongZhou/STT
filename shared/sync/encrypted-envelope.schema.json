@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://timbertrail.local/screentimeguardian/encrypted-envelope.schema.json",
+  "title": "Screen Time Guardian encrypted P2P envelope",
+  "type": "object",
+  "required": [
+    "protocol_version",
+    "type",
+    "sender_device_id",
+    "sender_device_name",
+    "platform",
+    "pairing_verifier",
+    "payload",
+    "sent_at_utc"
+  ],
+  "properties": {
+    "protocol_version": { "type": "integer", "const": 1 },
+    "type": { "type": "string", "const": "sync_snapshot" },
+    "sender_device_id": { "type": "string", "minLength": 1 },
+    "sender_device_name": { "type": "string" },
+    "platform": {
+      "type": "string",
+      "enum": ["macos", "ios", "ipados", "windows", "android", "unknown"]
+    },
+    "sender_tcp_port": {
+      "type": ["integer", "null"],
+      "minimum": 1,
+      "maximum": 65535
+    },
+    "capabilities": {
+      "type": "array",
+      "items": { "type": "string" },
+      "uniqueItems": true
+    },
+    "payload_encoding": {
+      "type": "string",
+      "enum": ["plain", "gzip"]
+    },
+    "pairing_verifier": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{16}$"
+    },
+    "payload": {
+      "type": "string",
+      "contentEncoding": "base64"
+    },
+    "sent_at_utc": { "type": "string", "format": "date-time" }
+  },
+  "additionalProperties": false
+}

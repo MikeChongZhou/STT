@@ -1,0 +1,80 @@
+# macOS / Finder
+.DS_Store
+._*
+
+# Local secrets and machine-specific config
+.env
+.env.*
+!.env.example
+*.local
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+tmp/
+temp/
+
+# App build outputs and generated packages
+build/
+dist/
+*.app
+*.ipa
+*.apk
+*.aab
+*.msix
+*.nupkg
+*.zip
+*.dmg
+*.pkg
+*.exe
+
+# Local runtime installed for building Windows releases
+.dotnet/
+
+# Local app data generated while testing
+sessions.json
+deleted_sessions.json
+daily_totals.json
+settings.json
+history/
+tracking/
+
+# Generated screenshots / local UI captures
+*_current_screen.png
+ios_sim_*.png
+android_sim_*.png
+
+# Xcode / Swift
+DerivedData/
+.build/
+*.xcuserstate
+*.xccheckout
+*.moved-aside
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+xcuserdata/
+
+# Swift Package Manager generated files
+Package.resolved
+
+# Android / Gradle
+android/.gradle/
+android/.idea/
+android/.kotlin/
+android/local.properties
+android/**/build/
+*.iml
+
+# .NET / Windows
+windows/**/bin/
+windows/**/obj/
+windows/**/.vs/
+windows/**/TestResults/
+*.user
+*.suo
+*.pdb
+
+# IDE metadata
+.idea/
+.vscode/

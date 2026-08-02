@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://timbertrail.local/screentimeguardian/screen-session.schema.json",
+  "title": "Screen Time Guardian screen_session",
+  "type": "object",
+  "required": [
+    "id",
+    "device_id",
+    "device_name",
+    "platform",
+    "measurement_scope",
+    "start_at_utc",
+    "start_timezone",
+    "duration_seconds",
+    "created_at_utc",
+    "updated_at_utc",
+    "revision",
+    "sync_status"
+  ],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "device_id": { "type": "string", "minLength": 1 },
+    "device_name": { "type": "string" },
+    "platform": {
+      "type": "string",
+      "enum": ["macos", "ios", "ipados", "windows", "android", "unknown"]
+    },
+    "measurement_scope": {
+      "type": "string",
+      "enum": ["global_exact", "android_usage_stats", "ios_screen_time_selected", "app_foreground_only", "manual"]
+    },
+    "start_at_utc": { "type": "string", "format": "date-time" },
+    "start_timezone": { "type": "string" },
+    "end_at_utc": { "type": ["string", "null"], "format": "date-time" },
+    "end_timezone": { "type": ["string", "null"] },
+    "duration_seconds": { "type": "integer", "minimum": 0 },
+    "stop_action": {
+      "type": ["string", "null"],
+      "enum": [
+        "report_opened",
+        "eye_rest_prompt",
+        "posture_rest_prompt",
+        "screen_locked",
+        "screensaver_started",
+        "standby_started",
+        "shutdown_started",
+        "app_exit",
+        "app_backgrounded",
+        "date_rollover",
+        "screen_time_checkpoint",
+        "timeout_prompt",
+        "crash_recovered",
+        null
+      ]
+    },
+    "heartbeat_at_utc": { "type": ["string", "null"], "format": "date-time" },
+    "created_at_utc": { "type": "string", "format": "date-time" },
+    "updated_at_utc": { "type": "string", "format": "date-time" },
+    "revision": { "type": "integer", "minimum": 1 },
+    "sync_status": { "type": "string" }
+  },
+  "additionalProperties": false
+}
