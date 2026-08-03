@@ -245,7 +245,12 @@ final class ScreenTimeGuardianMonitorExtension: DeviceActivityMonitor {
         let today = localDateString(now)
         if let baseline = notificationBaseline(for: today, now: now),
            thresholdMinutes <= baseline.thresholdMinutes {
-            return false
+            // Always allow checkpoint events — they record data segments, not reminders.
+            // A checkpoint at a previously-reached threshold is a new data point, not a duplicate.
+            let isCheckpoint = !isReminderThreshold(thresholdMinutes)
+            if !isCheckpoint {
+                return false
+            }
         }
 
         if isLikelyHistoricalCatchUp(thresholdMinutes: thresholdMinutes, today: today, now: now) {
