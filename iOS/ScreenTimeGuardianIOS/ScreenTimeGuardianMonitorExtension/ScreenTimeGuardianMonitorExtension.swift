@@ -17,6 +17,7 @@ final class ScreenTimeGuardianMonitorExtension: DeviceActivityMonitor {
         let defaults = ScreenTimeGuardianScreenTimeStorage.sharedDefaults()
         defaults?.removeObject(forKey: "screen_time_guardian.last_checkpoint_reached_at_utc")
         defaults?.removeObject(forKey: "screen_time_guardian.last_checkpoint_threshold_minutes")
+        defaults?.removeObject(forKey: "screen_time_guardian.last_recorded_threshold_minutes")
     }
 
     override func intervalDidEnd(for activity: DeviceActivityName) {
@@ -100,38 +101,45 @@ final class ScreenTimeGuardianMonitorExtension: DeviceActivityMonitor {
 
         // Align with system Screen Time: use the threshold value itself as the source of truth.
         // The system's DeviceActivity threshold = cumulative screen-on minutes since monitoring started.
-        // So: actual segment = currentThreshold - lastCheckpointThreshold.
+        // So: actual segment = currentThreshold - lastRecordedThreshold.
         // This naturally excludes lock/sleep time because the system doesn't count them.
-        let actualSegmentSeconds: Int
+        //
+        // IMPORTANT: Both checkpoint AND reminder events must update the shared baseline.
+        // Otherwise, when checkpoint@6 and posture@6 fire at the same time,
+        // both would record segment = 6-4 = 2min, double-counting the same window.
         let thresholdMinutes = thresholdSeconds / 60
-        let lastCheckpointThresholdKey = "screen_time_guardian.last_checkpoint_threshold_minutes"
-        let lastCheckpointThreshold = defaults?.integer(forKey: lastCheckpointThresholdKey) ?? 0
+        let lastThresholdKey = "screen_time_guardian.last_recorded_threshold_minutes"
+        let lastThreshold = defaults?.integer(forKey: lastThresholdKey) ?? 0
 
-        if isCheckpointEvent(event) {
-            if lastCheckpointThreshold > 0 {
-                // Segment = system's cumulative now - system's cumulative at last checkpoint
-                let deltaMinutes = max(1, thresholdMinutes - lastCheckpointThreshold)
+        let actualSegmentSeconds: Int
+        if lastThreshold > 0 {
+            let deltaMinutes = thresholdMinutes - lastThreshold
+            if deltaMinutes <= 0 {
+                // Another event already recorded at this threshold — skip to avoid double-count
+                actualSegmentSeconds = 0
+            } else {
                 actualSegmentSeconds = deltaMinutes * 60
-            } else {
-                // First checkpoint ever — use the threshold as the segment
-                actualSegmentSeconds = thresholdSeconds
             }
-            defaults?.set(thresholdMinutes, forKey: lastCheckpointThresholdKey)
         } else {
-            // Reminder event: segment = threshold - last checkpoint threshold
-            if lastCheckpointThreshold > 0 {
-                let deltaMinutes = max(1, thresholdMinutes - lastCheckpointThreshold)
-                actualSegmentSeconds = min(deltaMinutes * 60, thresholdSeconds)
-            } else {
-                actualSegmentSeconds = segmentDurationSeconds(for: event)
-            }
-            // Don't update lastCheckpointThreshold for reminder events
+            // First event ever — use the full threshold as the segment
+            actualSegmentSeconds = thresholdSeconds
         }
+
+        // Update shared baseline for ALL events (prevents double-count when checkpoint and reminder fire at same threshold)
+        defaults?.set(thresholdMinutes, forKey: lastThresholdKey)
+
+        // Only checkpoint events record time segments.
+        // Reminder events (eye rest, posture) only trigger notifications — they don't add data.
+        // This prevents double-counting: checkpoints already cover all time intervals.
+        if !isCheckpointEvent(event) { return }
+
+        // Skip zero-duration segments (duplicate threshold events)
+        guard actualSegmentSeconds > 0 else { return }
 
         let stableId = stableEventId(eventName: eventName, thresholdSeconds: thresholdSeconds, reachedAt: reachedAt)
         let record = ScreenTimeGuardianScreenTimeEvent(
             id: stableId,
-            eventName: eventName,
+            eventName: ScreenTimeGuardianScreenTimeNames.checkpointEvent,
             thresholdSeconds: thresholdSeconds,
             segmentDurationSeconds: actualSegmentSeconds,
             reachedAtUtc: reachedAt,
