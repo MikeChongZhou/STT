@@ -13,6 +13,8 @@ final class ScreenTimeGuardianMonitorExtension: DeviceActivityMonitor {
         super.intervalDidStart(for: activity)
         managedSettingsStore.clearAllSettings()
         resetNotificationDeliveryState(now: Date())
+        // Reset checkpoint timestamp so first checkpoint uses theoretical duration
+        ScreenTimeGuardianScreenTimeStorage.sharedDefaults()?.removeObject(forKey: "screen_time_guardian.last_checkpoint_reached_at_utc")
     }
 
     override func intervalDidEnd(for activity: DeviceActivityName) {
@@ -92,12 +94,39 @@ final class ScreenTimeGuardianMonitorExtension: DeviceActivityMonitor {
         }
 
         let now = reachedAt
+
+        // Use actual elapsed time since last checkpoint instead of theoretical segment duration.
+        // This captures real screen-on time between checkpoints, reducing data loss.
+        let actualSegmentSeconds: Int
+        if isCheckpointEvent(event) {
+            let defaults = ScreenTimeGuardianScreenTimeStorage.sharedDefaults()
+            let lastKey = "screen_time_guardian.last_checkpoint_reached_at_utc"
+            if let lastAt = defaults?.object(forKey: lastKey) as? Date {
+                let elapsed = max(1, Int(now.timeIntervalSince(lastAt)))
+                // Cap at threshold to avoid overcounting from catch-up events
+                actualSegmentSeconds = min(elapsed, thresholdSeconds)
+            } else {
+                actualSegmentSeconds = segmentDurationSeconds(for: event)
+            }
+            defaults?.set(now, forKey: lastKey)
+        } else {
+            // For reminder events, use actual time since last checkpoint
+            let defaults = ScreenTimeGuardianScreenTimeStorage.sharedDefaults()
+            let lastKey = "screen_time_guardian.last_checkpoint_reached_at_utc"
+            if let lastAt = defaults?.object(forKey: lastKey) as? Date {
+                let elapsed = max(1, Int(now.timeIntervalSince(lastAt)))
+                actualSegmentSeconds = min(elapsed, thresholdSeconds)
+            } else {
+                actualSegmentSeconds = segmentDurationSeconds(for: event)
+            }
+        }
+
         let stableId = stableEventId(eventName: eventName, thresholdSeconds: thresholdSeconds, reachedAt: reachedAt)
         let record = ScreenTimeGuardianScreenTimeEvent(
             id: stableId,
             eventName: eventName,
             thresholdSeconds: thresholdSeconds,
-            segmentDurationSeconds: segmentDurationSeconds(for: event),
+            segmentDurationSeconds: actualSegmentSeconds,
             reachedAtUtc: reachedAt,
             createdAtUtc: now
         )
@@ -190,6 +219,11 @@ final class ScreenTimeGuardianMonitorExtension: DeviceActivityMonitor {
 
     private func isReminderThreshold(_ thresholdMinutes: Int) -> Bool {
         thresholdMinutes.isMultiple(of: eyeRestIntervalMinutes) || includesPosture(thresholdMinutes: thresholdMinutes)
+    }
+
+    private func isCheckpointEvent(_ event: DeviceActivityEvent.Name) -> Bool {
+        guard let minutes = restEventThresholdMinutes(for: event) else { return true }
+        return !isReminderThreshold(minutes)
     }
 
     private func segmentDurationMinutes(for thresholdMinutes: Int) -> Int {
