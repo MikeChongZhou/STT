@@ -3729,16 +3729,16 @@ final class RestPromptWindowController: NSWindowController {
     private let countdownLabel = NSTextField(labelWithString: "")
     private let closeButton = NSButton(title: "关闭", target: nil, action: nil)
     private var timer: Timer?
-    private var remaining: Int
+    private let canCloseAt: Date
 
     init(title: String, message: String, countdownSeconds: Int, immediateClose: Bool, language: String = "zh", onDismiss: @escaping () -> Void) {
         self.countdownSeconds = countdownSeconds
         self.immediateClose = immediateClose
         self.language = language
         self.onDismiss = onDismiss
-        self.remaining = countdownSeconds
+        self.canCloseAt = Date().addingTimeInterval(TimeInterval(countdownSeconds))
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 560, height: 300),
+            contentRect: NSRect(x: 0, y: 0, width: 560, height: 340),
             styleMask: [.titled],
             backing: .buffered,
             defer: false
@@ -3780,8 +3780,11 @@ final class RestPromptWindowController: NSWindowController {
         }
     }
 
+    private var remaining: Int {
+        max(0, Int(ceil(canCloseAt.timeIntervalSinceNow)))
+    }
+
     private func tick() {
-        remaining -= 1
         updateCountdownLabel()
         if remaining <= 0 {
             timer?.invalidate()
@@ -4091,7 +4094,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let postureDue = (store.settings.postureSwitchEnabled ?? true) && postureActiveSeconds >= postureRestSeconds
         if eyeActiveSeconds >= eyeRestSeconds || postureDue {
             eyeActiveSeconds = 0
-            if postureDue {
+            if postureDue || !(store.settings.postureSwitchEnabled ?? true) {
                 postureActiveSeconds = 0
             }
             let language = store.settings.language
