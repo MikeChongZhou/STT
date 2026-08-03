@@ -13,8 +13,10 @@ final class ScreenTimeGuardianMonitorExtension: DeviceActivityMonitor {
         super.intervalDidStart(for: activity)
         managedSettingsStore.clearAllSettings()
         resetNotificationDeliveryState(now: Date())
-        // Reset checkpoint timestamp so first checkpoint uses theoretical duration
-        ScreenTimeGuardianScreenTimeStorage.sharedDefaults()?.removeObject(forKey: "screen_time_guardian.last_checkpoint_reached_at_utc")
+        // Reset checkpoint baseline for new monitoring interval
+        let defaults = ScreenTimeGuardianScreenTimeStorage.sharedDefaults()
+        defaults?.removeObject(forKey: "screen_time_guardian.last_checkpoint_reached_at_utc")
+        defaults?.removeObject(forKey: "screen_time_guardian.last_checkpoint_threshold_minutes")
     }
 
     override func intervalDidEnd(for activity: DeviceActivityName) {
@@ -94,31 +96,36 @@ final class ScreenTimeGuardianMonitorExtension: DeviceActivityMonitor {
         }
 
         let now = reachedAt
+        let defaults = ScreenTimeGuardianScreenTimeStorage.sharedDefaults()
 
-        // Use actual elapsed time since last checkpoint instead of theoretical segment duration.
-        // This captures real screen-on time between checkpoints, reducing data loss.
+        // Align with system Screen Time: use the threshold value itself as the source of truth.
+        // The system's DeviceActivity threshold = cumulative screen-on minutes since monitoring started.
+        // So: actual segment = currentThreshold - lastCheckpointThreshold.
+        // This naturally excludes lock/sleep time because the system doesn't count them.
         let actualSegmentSeconds: Int
+        let thresholdMinutes = thresholdSeconds / 60
+        let lastCheckpointThresholdKey = "screen_time_guardian.last_checkpoint_threshold_minutes"
+        let lastCheckpointThreshold = defaults?.integer(forKey: lastCheckpointThresholdKey) ?? 0
+
         if isCheckpointEvent(event) {
-            let defaults = ScreenTimeGuardianScreenTimeStorage.sharedDefaults()
-            let lastKey = "screen_time_guardian.last_checkpoint_reached_at_utc"
-            if let lastAt = defaults?.object(forKey: lastKey) as? Date {
-                let elapsed = max(1, Int(now.timeIntervalSince(lastAt)))
-                // Cap at threshold to avoid overcounting from catch-up events
-                actualSegmentSeconds = min(elapsed, thresholdSeconds)
+            if lastCheckpointThreshold > 0 {
+                // Segment = system's cumulative now - system's cumulative at last checkpoint
+                let deltaMinutes = max(1, thresholdMinutes - lastCheckpointThreshold)
+                actualSegmentSeconds = deltaMinutes * 60
             } else {
-                actualSegmentSeconds = segmentDurationSeconds(for: event)
+                // First checkpoint ever — use the threshold as the segment
+                actualSegmentSeconds = thresholdSeconds
             }
-            defaults?.set(now, forKey: lastKey)
+            defaults?.set(thresholdMinutes, forKey: lastCheckpointThresholdKey)
         } else {
-            // For reminder events, use actual time since last checkpoint
-            let defaults = ScreenTimeGuardianScreenTimeStorage.sharedDefaults()
-            let lastKey = "screen_time_guardian.last_checkpoint_reached_at_utc"
-            if let lastAt = defaults?.object(forKey: lastKey) as? Date {
-                let elapsed = max(1, Int(now.timeIntervalSince(lastAt)))
-                actualSegmentSeconds = min(elapsed, thresholdSeconds)
+            // Reminder event: segment = threshold - last checkpoint threshold
+            if lastCheckpointThreshold > 0 {
+                let deltaMinutes = max(1, thresholdMinutes - lastCheckpointThreshold)
+                actualSegmentSeconds = min(deltaMinutes * 60, thresholdSeconds)
             } else {
                 actualSegmentSeconds = segmentDurationSeconds(for: event)
             }
+            // Don't update lastCheckpointThreshold for reminder events
         }
 
         let stableId = stableEventId(eventName: eventName, thresholdSeconds: thresholdSeconds, reachedAt: reachedAt)
