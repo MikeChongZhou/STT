@@ -1307,6 +1307,25 @@ final class AppStore: ObservableObject {
         return removed
     }
 
+    func deleteSession(_ session: ScreenSession, now: Date = Date()) {
+        let tombstone = DeletedSession(
+            id: "session-\(session.id)-\(Int(now.timeIntervalSince1970))",
+            sessionId: session.id,
+            deviceId: session.deviceId,
+            startAtUtc: session.startAtUtc,
+            endAtUtc: session.endAtUtc,
+            deletedByDeviceId: settings.deviceId,
+            deletedAtUtc: now,
+            updatedAtUtc: now
+        )
+        deletedSessions.append(tombstone)
+        deletedSessions.sort { $0.updatedAtUtc > $1.updatedAtUtc }
+        removeDeletedSessionsInMemory()
+        saveDeletedSessions()
+        saveSessions()
+        recomputeDailyTotals()
+    }
+
     func recoverOpenSessions(now: Date = Date()) {
         var changed = false
         for index in sessions.indices {
@@ -3382,31 +3401,67 @@ struct DailyReportContent: View {
             DeviceUsageSummaryTable(startDate: dayStart, endDate: dayEnd, dayCount: 1)
             WeeklyPlatformSummaryView()
             ReportSection(title: localizedText("明细", "Details", language: language)) {
-                ReportTable(
-                    headers: [
-                        localizedText("开始", "Start", language: language),
-                        localizedText("结束", "End", language: language),
-                        localizedText("时长", "Duration", language: language),
-                        localizedText("停止动作", "Stop Action", language: language),
-                        localizedText("平台", "Platform", language: language),
-                        localizedText("设备", "Device", language: language),
-                        localizedText("范围", "Scope", language: language)
-                    ],
-                    rows: sessions.map { session in
-                        let clippedStart = max(session.startAtUtc, dayStart)
-                        let clippedEnd = min(store.effectiveEnd(for: session), dayEnd)
-                        return [
-                            DateTools.dateTimeString(clippedStart),
-                            store.isLocalOpenSession(session) ? localizedText("进行中", "In progress", language: language) : DateTools.dateTimeString(clippedEnd),
-                            DateTools.formatDuration(effectiveDuration(session, dayStart: dayStart, dayEnd: dayEnd), language: language),
-                            session.stopAction?.title(language: language) ?? localizedText("进行中", "In progress", language: language),
-                            platformTitle(session.platform),
-                            session.deviceName,
-                            session.measurementScope.rawValue
-                        ]
-                    },
-                    minWidth: 960
-                )
+                if sessions.isEmpty {
+                    Text(localizedText("暂无记录", "No records", language: language))
+                        .foregroundStyle(.secondary)
+                        .padding()
+                } else {
+                    ReportTable(
+                        headers: [
+                            localizedText("开始", "Start", language: language),
+                            localizedText("结束", "End", language: language),
+                            localizedText("时长", "Duration", language: language),
+                            localizedText("停止动作", "Stop Action", language: language),
+                            localizedText("平台", "Platform", language: language),
+                            localizedText("设备", "Device", language: language),
+                            localizedText("范围", "Scope", language: language)
+                        ],
+                        rows: sessions.map { session in
+                            let clippedStart = max(session.startAtUtc, dayStart)
+                            let clippedEnd = min(store.effectiveEnd(for: session), dayEnd)
+                            return [
+                                DateTools.dateTimeString(clippedStart),
+                                store.isLocalOpenSession(session) ? localizedText("进行中", "In progress", language: language) : DateTools.dateTimeString(clippedEnd),
+                                DateTools.formatDuration(effectiveDuration(session, dayStart: dayStart, dayEnd: dayEnd), language: language),
+                                session.stopAction?.title(language: language) ?? localizedText("进行中", "In progress", language: language),
+                                platformTitle(session.platform),
+                                session.deviceName,
+                                session.measurementScope.rawValue
+                            ]
+                        },
+                        minWidth: 960
+                    )
+                    // Swipe-to-delete for individual sessions
+                    VStack(spacing: 0) {
+                        ForEach(sessions, id: \.id) { session in
+                            let clippedStart = max(session.startAtUtc, dayStart)
+                            let duration = effectiveDuration(session, dayStart: dayStart, dayEnd: dayEnd)
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("\(DateTools.dateTimeString(clippedStart)) · \(DateTools.formatDuration(duration, language: language))")
+                                        .font(.caption)
+                                    Text("\(platformTitle(session.platform)) · \(session.deviceName)")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Button {
+                                    store.deleteSession(session)
+                                    p2pService.syncNow()
+                                } label: {
+                                    Image(systemName: "trash")
+                                        .foregroundStyle(.red)
+                                }
+                                .buttonStyle(.borderless)
+                            }
+                            .padding(.vertical, 6)
+                            .padding(.horizontal, 8)
+                            Divider()
+                        }
+                    }
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(uiColor: .separator), lineWidth: 0.5))
+                }
             }
         }
         .onAppear {
