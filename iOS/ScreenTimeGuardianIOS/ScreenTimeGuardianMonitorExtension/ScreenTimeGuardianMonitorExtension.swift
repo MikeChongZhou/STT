@@ -209,7 +209,6 @@ final class ScreenTimeGuardianMonitorExtension: DeviceActivityMonitor {
         // ── System Screen Time Alignment ──
         // Compute app's total from the event log (not a stale counter).
         // This survives app restarts because the log persists in App Group storage.
-        let defaults2 = ScreenTimeGuardianScreenTimeStorage.sharedDefaults()
         let currentSystemTotalSeconds = thresholdMinutes * 60
 
         // Read all existing records and sum their segment durations
