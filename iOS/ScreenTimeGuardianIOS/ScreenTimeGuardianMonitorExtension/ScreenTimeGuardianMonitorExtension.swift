@@ -18,6 +18,7 @@ final class ScreenTimeGuardianMonitorExtension: DeviceActivityMonitor {
         defaults?.removeObject(forKey: "screen_time_guardian.last_checkpoint_reached_at_utc")
         defaults?.removeObject(forKey: "screen_time_guardian.last_checkpoint_threshold_minutes")
         defaults?.removeObject(forKey: "screen_time_guardian.last_recorded_threshold_minutes")
+        defaults?.removeObject(forKey: "screen_time_guardian.app_total_recorded_seconds")
     }
 
     override func intervalDidEnd(for activity: DeviceActivityName) {
@@ -207,34 +208,33 @@ final class ScreenTimeGuardianMonitorExtension: DeviceActivityMonitor {
         guard actualSegmentSeconds > 0 else { return }
 
         // ── System Screen Time Alignment ──
-        // Compute app's total from the event log (not a stale counter).
-        // This survives app restarts because the log persists in App Group storage.
+        // Two separate accumulators:
+        //   - systemTotal = threshold × 60 (from DeviceActivity, always correct)
+        //   - appTotal = persisted counter in App Group (updated here, recomputed on delete)
+        // gap = systemTotal - (appTotal + segment)
+        // If gap > 0, add it to this segment so app catches up.
+        //
+        // When a session is deleted by the user, the main app calls
+        // recomputeAppTotalFromSessions() to recalculate appTotal from
+        // the sessions list (which reflects deletions). This keeps the
+        // two accumulators in sync.
+        let defaults2 = ScreenTimeGuardianScreenTimeStorage.sharedDefaults()
+        let appTotalKey = "screen_time_guardian.app_total_recorded_seconds"
+        let appTotalSeconds = defaults2?.integer(forKey: appTotalKey) ?? 0
         let currentSystemTotalSeconds = thresholdMinutes * 60
 
-        // Read all existing records and sum their segment durations
-        let appTotalFromLog: Int = {
-            guard let url = ScreenTimeGuardianScreenTimeStorage.eventLogURL(),
-                  let data = try? Data(contentsOf: url),
-                  let records = try? ScreenTimeGuardianScreenTimeStorage.eventDecoder().decode([ScreenTimeGuardianScreenTimeEvent].self, from: data) else {
-                return 0
-            }
-            return records.reduce(0) { $0 + ($1.segmentDurationSeconds ?? 0) }
-        }()
-
-        // App's total after adding this segment
-        let appTotalAfterSegment = appTotalFromLog + actualSegmentSeconds
-
-        // Gap = system total - app total after this segment
+        let appTotalAfterSegment = appTotalSeconds + actualSegmentSeconds
         let gap = currentSystemTotalSeconds - appTotalAfterSegment
 
         let alignedSegmentSeconds: Int
         if gap > 0 {
-            // System has recorded more screen time than app.
-            // This happens when app restarts or checkpoints were missed.
             alignedSegmentSeconds = actualSegmentSeconds + gap
         } else {
             alignedSegmentSeconds = actualSegmentSeconds
         }
+
+        // Persist updated app total
+        defaults2?.set(appTotalSeconds + alignedSegmentSeconds, forKey: appTotalKey)
 
         let stableId = stableEventId(eventName: eventName, thresholdSeconds: thresholdSeconds, reachedAt: reachedAt)
         let record = ScreenTimeGuardianScreenTimeEvent(

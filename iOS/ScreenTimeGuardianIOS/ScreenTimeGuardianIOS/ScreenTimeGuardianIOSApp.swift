@@ -1324,6 +1324,15 @@ final class AppStore: ObservableObject {
         saveDeletedSessions()
         saveSessions()
         recomputeDailyTotals()
+        recomputeAppTotalFromSessions()
+    }
+
+    /// Recompute app_total_recorded_seconds from the sessions list.
+    /// Called after deleting a session so the alignment accumulator stays in sync.
+    func recomputeAppTotalFromSessions() {
+        let total = sessions.reduce(0) { $0 + ($1.durationSeconds ?? 0) }
+        let defaults = ScreenTimeGuardianScreenTimeStorage.sharedDefaults()
+        defaults?.set(total, forKey: "screen_time_guardian.app_total_recorded_seconds")
     }
 
     func recoverOpenSessions(now: Date = Date()) {
