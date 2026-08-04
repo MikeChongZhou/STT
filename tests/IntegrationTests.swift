@@ -417,6 +417,86 @@ do {
     assertEqual(decoded.capabilities?.count, 2, "Snapshot: round-trip capabilities")
 }
 
+// MARK: T6 - iOS ScreenTime Alignment Simulation
+
+testSection("T6: iOS ScreenTime alignment simulation")
+
+// Simulates the checkpoint-based recording with cumulative total alignment
+struct CheckpointSimulator {
+    var lastRecordedThreshold: Int = 0
+    var appTotalRecorded: Int = 0
+    var records: [(threshold: Int, segment: Int, systemTotal: Int, appTotal: Int)] = []
+
+    mutating func checkpoint(thresholdMinutes: Int) {
+        let delta = thresholdMinutes - lastRecordedThreshold
+        guard delta > 0 else { return }
+        lastRecordedThreshold = thresholdMinutes
+        let segment = delta * 60
+        let systemTotal = thresholdMinutes * 60
+        let appTotalAfter = appTotalRecorded + segment
+        let gap = systemTotal - appTotalAfter
+        let aligned = gap > 0 ? segment + gap : segment
+        appTotalRecorded += aligned
+        records.append((threshold: thresholdMinutes, segment: aligned, systemTotal: systemTotal, appTotal: appTotalRecorded))
+    }
+
+    mutating func reminder(thresholdMinutes: Int) {
+        let delta = thresholdMinutes - lastRecordedThreshold
+        if delta > 0 { lastRecordedThreshold = thresholdMinutes }
+    }
+}
+
+// T6.1: Continuous usage — perfectly aligned
+var sim1 = CheckpointSimulator()
+for m in stride(from: 2, through: 10, by: 2) { sim1.checkpoint(thresholdMinutes: m) }
+assertEqual(sim1.records.last!.appTotal, 600, "T6.1: 10min continuous = 600s")
+assertEqual(sim1.records.last!.appTotal, sim1.records.last!.systemTotal, "T6.1: app == system")
+
+// T6.2: With reminders — no double-count
+var sim2 = CheckpointSimulator()
+sim2.checkpoint(thresholdMinutes: 2)
+sim2.reminder(thresholdMinutes: 3)
+sim2.checkpoint(thresholdMinutes: 4)
+sim2.checkpoint(thresholdMinutes: 6)
+sim2.reminder(thresholdMinutes: 6)
+sim2.checkpoint(thresholdMinutes: 8)
+sim2.reminder(thresholdMinutes: 9)
+sim2.checkpoint(thresholdMinutes: 10)
+assertEqual(sim2.records.last!.appTotal, 600, "T6.2: With reminders = 600s")
+
+// T6.3: Lock gap — system pauses, thresholds don't advance
+var sim3 = CheckpointSimulator()
+sim3.checkpoint(thresholdMinutes: 2)
+sim3.checkpoint(thresholdMinutes: 4)
+// Lock 10min — system pauses, no thresholds fire
+sim3.checkpoint(thresholdMinutes: 6)
+sim3.checkpoint(thresholdMinutes: 8)
+assertEqual(sim3.records.last!.appTotal, 480, "T6.3: With lock gap = 480s")
+assertEqual(sim3.records.last!.appTotal, sim3.records.last!.systemTotal, "T6.3: aligned after gap")
+
+// T6.4: All checkpoints maintain alignment
+var sim4 = CheckpointSimulator()
+for m in stride(from: 2, through: 60, by: 2) { sim4.checkpoint(thresholdMinutes: m) }
+var allAligned = true
+for r in sim4.records { if r.appTotal != r.systemTotal { allAligned = false; break } }
+assert(allAligned, "T6.4: All 30 checkpoints maintain alignment")
+
+// T6.5: 1-minute checkpoint interval
+var sim5 = CheckpointSimulator()
+for m in 1...60 { sim5.checkpoint(thresholdMinutes: m) }
+assertEqual(sim5.records.last!.appTotal, 3600, "T6.5: 60x1min = 3600s")
+assertEqual(sim5.records.last!.appTotal, sim5.records.last!.systemTotal, "T6.5: aligned")
+
+// T6.6: Reminder at same threshold as checkpoint
+var sim6 = CheckpointSimulator()
+sim6.checkpoint(thresholdMinutes: 2)
+sim6.checkpoint(thresholdMinutes: 4)
+sim6.checkpoint(thresholdMinutes: 6)
+sim6.reminder(thresholdMinutes: 6) // duplicate threshold
+sim6.checkpoint(thresholdMinutes: 8)
+assertEqual(sim6.records.count, 4, "T6.6: 4 records not 5")
+assertEqual(sim6.records.last!.appTotal, 480, "T6.6: total=480s")
+
 // MARK: Edge Cases
 
 testSection("Edge cases")
