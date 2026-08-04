@@ -1332,7 +1332,7 @@ final class AppStore: ObservableObject {
     /// Uses the same date as the report to keep totals consistent.
     func recomputeAppTotalFromSessions() {
         let today = DateTools.dateString(Date())
-        let todayTotal = dailyTotals[today]?.totalSeconds ?? 0
+        let todayTotal = dailyTotals.first(where: { $0.date == today })?.durationSeconds ?? 0
         let defaults = ScreenTimeGuardianScreenTimeStorage.sharedDefaults()
         defaults?.set(todayTotal, forKey: "screen_time_guardian.app_total_recorded_seconds")
     }
