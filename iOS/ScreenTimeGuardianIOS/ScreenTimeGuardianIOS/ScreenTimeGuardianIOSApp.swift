@@ -969,6 +969,9 @@ final class AppStore: ObservableObject {
         ScreenTimeGuardianScreenTimeStorage.sharedDefaults()?.set(settings.language, forKey: ScreenTimeGuardianScreenTimeStorage.languageKey)
         UserDefaults.standard.set(settings.iosScreenTimeCheckpointIntervalMinutes ?? 2, forKey: ScreenTimeGuardianScreenTimeStorage.checkpointIntervalMinutesKey)
         ScreenTimeGuardianScreenTimeStorage.sharedDefaults()?.set(settings.iosScreenTimeCheckpointIntervalMinutes ?? 2, forKey: ScreenTimeGuardianScreenTimeStorage.checkpointIntervalMinutesKey)
+        // Sync daily plan to App Group for Extension overtime check
+        let plannedMinutes = settings.plannedDailyMinutes ?? defaultPlannedDailyMinutes
+        ScreenTimeGuardianScreenTimeStorage.sharedDefaults()?.set(plannedMinutes, forKey: "screen_time_guardian.planned_daily_minutes")
         saveKeychainDeviceId(settings.deviceId)
         try? settings.deviceId.data(using: .utf8)?.write(to: identityURL, options: .atomic)
     }

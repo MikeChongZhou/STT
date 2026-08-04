@@ -56,6 +56,65 @@ final class ScreenTimeGuardianMonitorExtension: DeviceActivityMonitor {
             )
             center.add(request)
         }
+
+        // Check daily plan overtime at every checkpoint
+        if isCheckpointEvent(event) {
+            checkDailyPlanOvertime(thresholdMinutes: thresholdMinutes ?? (thresholdSeconds(for: event) ?? 0) / 60, now: now)
+        }
+    }
+
+    // MARK: - Daily Plan Overtime Check
+
+    private let overtimeNotificationIdentifier = "screen-time-guardian-overtime"
+    private let overtimeRepeatIntervalSeconds: TimeInterval = 25 * 60 // 25 min throttle
+
+    private func checkDailyPlanOvertime(thresholdMinutes: Int, now: Date) {
+        let defaults = ScreenTimeGuardianScreenTimeStorage.sharedDefaults()
+        guard let defaults = defaults else { return }
+
+        let plannedMinutes = defaults.integer(forKey: "screen_time_guardian.planned_daily_minutes")
+        guard plannedMinutes > 0 else { return }
+        guard thresholdMinutes >= plannedMinutes else { return }
+
+        // Throttle: once every 25 minutes per day
+        let today = localDateString(now)
+        let lastDate = defaults.string(forKey: "screen_time_guardian.last_overtime_date")
+        let lastAt = defaults.object(forKey: "screen_time_guardian.last_overtime_at_utc") as? Date
+
+        if lastDate == today, let lastAt = lastAt {
+            if now.timeIntervalSince(lastAt) < overtimeRepeatIntervalSeconds {
+                return // too soon
+            }
+        }
+
+        // Send overtime notification
+        let exceededMinutes = thresholdMinutes - plannedMinutes
+        let content = UNMutableNotificationContent()
+        content.title = localizedText("超过计划提醒", "Daily Plan Reached")
+        content.body = localizedText(
+            "今天的屏幕用时已超过计划\(plannedMinutes)分钟，已超出\(exceededMinutes)分钟。请休息一下。",
+            "Screen time exceeded your \(plannedMinutes)-min plan by \(exceededMinutes) minutes. Take a break."
+        )
+        if !meetingModeEnabled {
+            content.sound = .default
+            content.interruptionLevel = .timeSensitive
+        }
+
+        let center = UNUserNotificationCenter.current()
+        center.removePendingNotificationRequests(withIdentifiers: [overtimeNotificationIdentifier])
+        center.removeDeliveredNotifications(withIdentifiers: [overtimeNotificationIdentifier])
+        let request = UNNotificationRequest(
+            identifier: overtimeNotificationIdentifier,
+            content: content,
+            trigger: nil
+        )
+        center.add(request)
+
+        // Update throttle state
+        defaults.set(today, forKey: "screen_time_guardian.last_overtime_date")
+        defaults.set(now, forKey: "screen_time_guardian.last_overtime_at_utc")
+
+        log("Overtime alert: threshold=\(thresholdMinutes)min, planned=\(plannedMinutes)min")
     }
 
     private func notificationContent(for event: DeviceActivityEvent.Name) -> UNMutableNotificationContent? {
