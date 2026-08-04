@@ -114,7 +114,8 @@ final class ScreenTimeGuardianMonitorExtension: DeviceActivityMonitor {
         defaults.set(today, forKey: "screen_time_guardian.last_overtime_date")
         defaults.set(now, forKey: "screen_time_guardian.last_overtime_at_utc")
 
-        log("Overtime alert: threshold=\(thresholdMinutes)min, planned=\(plannedMinutes)min")
+        // Log overtime event to shared defaults for debugging
+        defaults.set("overtime: threshold=\(thresholdMinutes) planned=\(plannedMinutes)", forKey: "screen_time_guardian.last_overtime_log")
     }
 
     private func notificationContent(for event: DeviceActivityEvent.Name) -> UNMutableNotificationContent? {
@@ -204,9 +205,8 @@ final class ScreenTimeGuardianMonitorExtension: DeviceActivityMonitor {
         // If app > system (shouldn't happen), use the threshold delta as-is.
         let defaults2 = ScreenTimeGuardianScreenTimeStorage.sharedDefaults()
         let appTotalKey = "screen_time_guardian.app_total_recorded_seconds"
-        let systemTotalKey = "screen_time_guardian.system_total_at_last_checkpoint"
         let appTotalSeconds = defaults2?.integer(forKey: appTotalKey) ?? 0
-        let systemTotalSeconds = defaults2?.integer(forKey: systemTotalKey) ?? 0
+        let systemTotalKey = "screen_time_guardian.system_total_at_last_checkpoint"
 
         // System's cumulative screen time at this checkpoint
         let currentSystemTotalSeconds = thresholdMinutes * 60
