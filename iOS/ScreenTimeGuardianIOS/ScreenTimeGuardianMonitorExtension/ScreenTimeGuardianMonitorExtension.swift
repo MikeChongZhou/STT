@@ -41,8 +41,18 @@ final class ScreenTimeGuardianMonitorExtension: DeviceActivityMonitor {
             isReminderThreshold(minutes) ? minutes : nil
         }
         let shouldPrompt = reminderThresholdMinutes.map { shouldDeliverReminder(thresholdMinutes: $0, now: now) } ?? false
+        let isReminder = reminderThresholdMinutes != nil
 
-        recordEvent(for: event, reachedAt: now, suppressReminder: reminderThresholdMinutes != nil && !shouldPrompt)
+        // Only checkpoint events record time segments.
+        // Reminder events only send notifications, never record data.
+        // This prevents double-counting when checkpoint and reminder fire at the same threshold.
+        if !isReminder {
+            recordEvent(for: event, reachedAt: now, suppressReminder: false)
+        } else {
+            // Update baseline even for reminders (prevents checkpoint seeing wrong delta)
+            let defaults = ScreenTimeGuardianScreenTimeStorage.sharedDefaults()
+            defaults?.set(thresholdMinutes, forKey: "screen_time_guardian.last_recorded_threshold_minutes")
+        }
         clearManagedSettingsShield()
 
         if shouldPrompt, let notification = notificationContent(for: event) {
@@ -188,6 +198,8 @@ final class ScreenTimeGuardianMonitorExtension: DeviceActivityMonitor {
         }
 
         // Update shared baseline for ALL events (prevents double-count when checkpoint and reminder fire at same threshold)
+        // This MUST happen before the checkpoint check, so that whichever event fires second
+        // at the same threshold sees the updated baseline and records delta=0 (skip).
         defaults?.set(thresholdMinutes, forKey: lastThresholdKey)
 
         // Only checkpoint events record time segments.
