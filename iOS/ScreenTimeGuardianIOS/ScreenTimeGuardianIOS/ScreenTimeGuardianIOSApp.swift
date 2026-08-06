@@ -663,6 +663,7 @@ struct AppSettings: Codable {
     var lastWeeklyPlanMinutes: Int?
     var lastTimeoutPromptAtUtc: Date?
     var lastTimeoutPromptDate: String?
+    var overtimeRepeatExtraMinutes: Int?
 
     enum CodingKeys: String, CodingKey {
         case language
@@ -686,6 +687,7 @@ struct AppSettings: Codable {
         case lastWeeklyPlanMinutes = "last_weekly_plan_minutes"
         case lastTimeoutPromptAtUtc = "last_timeout_prompt_at_utc"
         case lastTimeoutPromptDate = "last_timeout_prompt_date"
+        case overtimeRepeatExtraMinutes = "overtime_repeat_extra_minutes"
     }
 
     static func defaults() -> AppSettings {
@@ -711,7 +713,8 @@ struct AppSettings: Codable {
             plannedDailyMinutes: defaultPlannedDailyMinutes,
             lastWeeklyPlanMinutes: nil,
             lastTimeoutPromptAtUtc: nil,
-            lastTimeoutPromptDate: nil
+            lastTimeoutPromptDate: nil,
+            overtimeRepeatExtraMinutes: 5
         )
     }
 
@@ -735,6 +738,7 @@ struct AppSettings: Codable {
         eyeRestIntervalMinutes = min(1440, max(1, eyeRestIntervalMinutes ?? 3))
         postureRestIntervalMinutes = AppSettings.derivedPostureRestIntervalMinutes(from: eyeRestIntervalMinutes ?? 3)
         iosScreenTimeCheckpointIntervalMinutes = min(1440, max(1, iosScreenTimeCheckpointIntervalMinutes ?? 2))
+        overtimeRepeatExtraMinutes = min(120, max(1, overtimeRepeatExtraMinutes ?? 5))
         trustedPeerIds = normalizedPeerIds(trustedPeerIds)
         let trusted = Set((trustedPeerIds ?? []).map { $0.lowercased() })
         rejectedPeerIds = normalizedPeerIds(rejectedPeerIds).filter { !trusted.contains($0.lowercased()) }
@@ -972,6 +976,13 @@ final class AppStore: ObservableObject {
         // Sync daily plan to App Group for Extension overtime check
         let plannedMinutes = settings.plannedDailyMinutes ?? defaultPlannedDailyMinutes
         ScreenTimeGuardianScreenTimeStorage.sharedDefaults()?.set(plannedMinutes, forKey: "screen_time_guardian.planned_daily_minutes")
+        let overtimeExtra = settings.overtimeRepeatExtraMinutes ?? 5
+        ScreenTimeGuardianScreenTimeStorage.sharedDefaults()?.set(overtimeExtra, forKey: ScreenTimeGuardianScreenTimeStorage.overtimeRepeatExtraMinutesKey)
+        // Sync P2P settings for Extension fast sync
+        ScreenTimeGuardianScreenTimeStorage.sharedDefaults()?.set(settings.p2pSyncEnabled ?? true, forKey: "screen_time_guardian.p2p_sync_enabled")
+        ScreenTimeGuardianScreenTimeStorage.sharedDefaults()?.set(settings.p2pPairingCode, forKey: "screen_time_guardian.p2p_pairing_code")
+        ScreenTimeGuardianScreenTimeStorage.sharedDefaults()?.set(settings.deviceId, forKey: "screen_time_guardian.device_id")
+        ScreenTimeGuardianScreenTimeStorage.sharedDefaults()?.set(settings.deviceName, forKey: "screen_time_guardian.device_name")
         saveKeychainDeviceId(settings.deviceId)
         try? settings.deviceId.data(using: .utf8)?.write(to: identityURL, options: .atomic)
     }
@@ -2635,6 +2646,22 @@ final class P2PSyncService: ObservableObject {
         DispatchQueue.main.async {
             self.peers = peers
         }
+        cachePeersForExtension(peers)
+    }
+
+    private func cachePeersForExtension(_ peers: [P2PDiscoveredPeer]) {
+        let trustedPeers = peers.filter { $0.pairingMatched && isTrusted($0.deviceId) && $0.tcpPort > 0 && !$0.address.isEmpty }
+        guard !trustedPeers.isEmpty else { return }
+        struct CachedPeer: Codable {
+            var deviceId: String
+            var address: String
+            var tcpPort: Int
+            var capabilities: [String]
+        }
+        let cached = trustedPeers.map { CachedPeer(deviceId: $0.deviceId, address: $0.address, tcpPort: $0.tcpPort, capabilities: $0.capabilities) }
+        if let data = try? JSONEncoder().encode(cached) {
+            ScreenTimeGuardianScreenTimeStorage.sharedDefaults()?.set(data, forKey: ScreenTimeGuardianScreenTimeStorage.cachedPeersKey)
+        }
     }
 
     private func sortedPeers() -> [P2PDiscoveredPeer] {
@@ -2784,9 +2811,7 @@ final class SessionTracker: ObservableObject {
             if showPromptForScreenTimeReminderIfNeeded(from: importedReminderSessions, now: now) {
                 return
             }
-            if shouldShowTimeoutPrompt(now: now) {
-                showTimeoutPrompt(now: now)
-            }
+            // Overtime check is now handled by checkpoint in the Monitor Extension.
             return
         }
         guard currentSession != nil else {
@@ -2797,10 +2822,8 @@ final class SessionTracker: ObservableObject {
         let language = store.settings.language
         accumulateReminderSeconds(now: now)
 
-        if shouldShowTimeoutPrompt(now: now) {
-            showTimeoutPrompt(now: now)
-            return
-        }
+        // Overtime check is now handled by checkpoint in the Monitor Extension.
+        // The foreground timer no longer triggers timeout prompts.
 
         let eyeRestMinutes = max(1, store.settings.eyeRestIntervalMinutes ?? 3)
         let eyeRestSeconds = eyeRestMinutes * 60
@@ -3826,16 +3849,9 @@ struct SettingsView: View {
                     Toggle(localizedText("P2P 同步", "P2P Sync", language: language), isOn: p2pSyncBinding)
                     TextField(localizedText("配对码", "Pairing Code", language: language), text: p2pPairingCodeBinding)
                         .keyboardType(.numberPad)
-                    HStack {
-                        Text(localizedText("同步间隔", "Sync Interval", language: language))
-                        Spacer()
-                        TextField(localizedText("分钟", "Minutes", language: language), value: p2pSyncIntervalBinding, format: .number)
-                            .keyboardType(.numberPad)
-                            .multilineTextAlignment(.trailing)
-                            .frame(maxWidth: 96)
-                        Text(localizedText("分钟", "min", language: language))
-                            .foregroundStyle(.secondary)
-                    }
+                    Text(localizedText("同步在每次屏幕用时检查点自动执行（无需前台）。", "Sync runs automatically at each screen time checkpoint (no foreground needed).", language: language))
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                     Button(localizedText("立即同步", "Sync Now", language: language)) {
                         store.saveSettings()
                         p2pService.refresh()
@@ -3913,6 +3929,22 @@ struct SettingsView: View {
                             .foregroundStyle(.secondary)
                     }
                     Text(localizedText("默认 8 小时 0 分钟。", "Default is 8h 0m.", language: language))
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    HStack {
+                        Text(localizedText("超时提醒间隔", "Overtime Reminder Interval", language: language))
+                        Spacer()
+                        Text(localizedText("每超过计划后，每累计新增", "After exceeding plan, remind every", language: language))
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                        TextField("", value: overtimeRepeatExtraMinutesBinding, format: .number)
+                            .keyboardType(.numberPad)
+                            .multilineTextAlignment(.trailing)
+                            .frame(maxWidth: 48)
+                        Text(localizedText("分钟", "min", language: language))
+                            .foregroundStyle(.secondary)
+                    }
+                    Text(localizedText("实际间隔 = 检查周期 + 此值。默认检查周期 2 分钟 + 5 分钟 = 7 分钟。", "Interval = checkpoint cycle + this value. Default: 2min cycle + 5min = 7min.", language: language))
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -4044,6 +4076,13 @@ struct SettingsView: View {
         Binding(
             get: { store.settings.p2pSyncIntervalMinutes ?? 5 },
             set: { store.settings.p2pSyncIntervalMinutes = min(1440, max(1, $0)) }
+        )
+    }
+
+    private var overtimeRepeatExtraMinutesBinding: Binding<Int> {
+        Binding(
+            get: { store.settings.overtimeRepeatExtraMinutes ?? 5 },
+            set: { store.settings.overtimeRepeatExtraMinutes = min(120, max(1, $0)) }
         )
     }
 

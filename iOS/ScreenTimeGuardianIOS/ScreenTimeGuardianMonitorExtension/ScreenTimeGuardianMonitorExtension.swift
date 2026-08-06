@@ -1,6 +1,7 @@
 import DeviceActivity
 import Foundation
 import ManagedSettings
+import Network
 import UserNotifications
 
 final class ScreenTimeGuardianMonitorExtension: DeviceActivityMonitor {
@@ -42,14 +43,11 @@ final class ScreenTimeGuardianMonitorExtension: DeviceActivityMonitor {
         let shouldPrompt = reminderThresholdMinutes.map { shouldDeliverReminder(thresholdMinutes: $0, now: now) } ?? false
         let isReminder = reminderThresholdMinutes != nil
 
-        // Only checkpoint events record time segments.
-        // Reminder events only send notifications, never record data.
+        // Only checkpoint events record time segments and update baseline.
+        // Reminder events (eye rest, posture) only send notifications —
+        // they must NOT touch the baseline to avoid race conditions.
         if !isReminder {
             recordEvent(for: event, reachedAt: now, suppressReminder: false)
-        } else {
-            // Update baseline even for reminders (prevents checkpoint seeing wrong delta)
-            let defaults = ScreenTimeGuardianScreenTimeStorage.sharedDefaults()
-            defaults?.set(thresholdMinutes, forKey: "screen_time_guardian.last_recorded_threshold_minutes")
         }
         clearManagedSettingsShield()
 
@@ -68,13 +66,14 @@ final class ScreenTimeGuardianMonitorExtension: DeviceActivityMonitor {
         // Check daily plan overtime at every checkpoint
         if isCheckpointEvent(event) {
             checkDailyPlanOvertime(thresholdMinutes: thresholdMinutes ?? (thresholdSeconds(for: event) ?? 0) / 60, now: now)
+            // Trigger P2P fast sync at every checkpoint
+            fastSyncOnCheckpoint()
         }
     }
 
     // MARK: - Daily Plan Overtime Check
 
     private let overtimeNotificationIdentifier = "screen-time-guardian-overtime"
-    private let overtimeRepeatIntervalSeconds: TimeInterval = 25 * 60 // 25 min throttle
 
     private func checkDailyPlanOvertime(thresholdMinutes: Int, now: Date) {
         let defaults = ScreenTimeGuardianScreenTimeStorage.sharedDefaults()
@@ -84,19 +83,35 @@ final class ScreenTimeGuardianMonitorExtension: DeviceActivityMonitor {
         guard plannedMinutes > 0 else { return }
         guard thresholdMinutes >= plannedMinutes else { return }
 
-        // Throttle: once every 25 minutes per day
-        let today = localDateString(now)
-        let lastDate = defaults.string(forKey: "screen_time_guardian.last_overtime_date")
-        let lastAt = defaults.object(forKey: "screen_time_guardian.last_overtime_at_utc") as? Date
+        // Repeat every (checkpointInterval + overtimeRepeatExtraMinutes) of cumulative screen time
+        let extraMinutes = defaults.integer(forKey: ScreenTimeGuardianScreenTimeStorage.overtimeRepeatExtraMinutesKey)
+        let repeatExtra = extraMinutes > 0 ? extraMinutes : 5
+        let repeatInterval = checkpointIntervalMinutes + repeatExtra
 
-        if lastDate == today, let lastAt = lastAt {
-            if now.timeIntervalSince(lastAt) < overtimeRepeatIntervalSeconds {
-                return // too soon
-            }
+        let today = localDateString(now)
+        let baselineKey = ScreenTimeGuardianScreenTimeStorage.overtimeBaselineThresholdMinutesKey
+        let lastDateKey = "screen_time_guardian.last_overtime_date"
+
+        // Reset baseline on new day
+        let lastDate = defaults.string(forKey: lastDateKey)
+        if lastDate != today {
+            defaults.set(thresholdMinutes, forKey: baselineKey)
+            defaults.set(today, forKey: lastDateKey)
+            // First overtime of the day — always notify
+            sendOvertimeNotification(plannedMinutes: plannedMinutes, exceededMinutes: thresholdMinutes - plannedMinutes, now: now, defaults: defaults)
+            return
         }
 
-        // Send overtime notification
-        let exceededMinutes = thresholdMinutes - plannedMinutes
+        let baselineThreshold = defaults.integer(forKey: baselineKey)
+        let newScreenMinutes = thresholdMinutes - baselineThreshold
+
+        if newScreenMinutes >= repeatInterval {
+            sendOvertimeNotification(plannedMinutes: plannedMinutes, exceededMinutes: thresholdMinutes - plannedMinutes, now: now, defaults: defaults)
+            defaults.set(thresholdMinutes, forKey: baselineKey)
+        }
+    }
+
+    private func sendOvertimeNotification(plannedMinutes: Int, exceededMinutes: Int, now: Date, defaults: UserDefaults) {
         let content = UNMutableNotificationContent()
         content.title = localizedText("超过计划提醒", "Daily Plan Reached")
         content.body = localizedText(
@@ -119,11 +134,123 @@ final class ScreenTimeGuardianMonitorExtension: DeviceActivityMonitor {
         center.add(request)
 
         // Update throttle state
+        let today = localDateString(now)
         defaults.set(today, forKey: "screen_time_guardian.last_overtime_date")
         defaults.set(now, forKey: "screen_time_guardian.last_overtime_at_utc")
+        defaults.set("overtime: threshold=\(plannedMinutes + exceededMinutes) planned=\(plannedMinutes) repeatInterval=\(checkpointIntervalMinutes + (defaults.integer(forKey: ScreenTimeGuardianScreenTimeStorage.overtimeRepeatExtraMinutesKey) > 0 ? defaults.integer(forKey: ScreenTimeGuardianScreenTimeStorage.overtimeRepeatExtraMinutesKey) : 5))", forKey: "screen_time_guardian.last_overtime_log")
+    }
 
-        // Log overtime event to shared defaults for debugging
-        defaults.set("overtime: threshold=\(thresholdMinutes) planned=\(plannedMinutes)", forKey: "screen_time_guardian.last_overtime_log")
+    // MARK: - P2P Fast Sync from Checkpoint
+
+    private struct CachedPeer: Codable {
+        var deviceId: String
+        var address: String
+        var tcpPort: Int
+        var capabilities: [String]
+    }
+
+    private func fastSyncOnCheckpoint() {
+        let defaults = ScreenTimeGuardianScreenTimeStorage.sharedDefaults()
+        guard let defaults = defaults else { return }
+        guard defaults.bool(forKey: "screen_time_guardian.p2p_sync_enabled") != false else { return }
+
+        guard let data = defaults.data(forKey: ScreenTimeGuardianScreenTimeStorage.cachedPeersKey) else { return }
+        guard let peers = try? JSONDecoder().decode([CachedPeer].self, from: data), !peers.isEmpty else { return }
+
+        // Load pairing key for encryption
+        guard let pairingCode = defaults.string(forKey: "screen_time_guardian.p2p_pairing_code"),
+              !pairingCode.isEmpty else { return }
+
+        let group = DispatchGroup()
+        for peer in peers {
+            group.enter()
+            connectAndSync(peer: peer, pairingCode: pairingCode) {
+                group.leave()
+            }
+        }
+        // Wait up to 15 seconds for all syncs to complete
+        _ = group.wait(timeout: .now() + 15)
+    }
+
+    private func connectAndSync(peer: CachedPeer, pairingCode: String, completion: @escaping () -> Void) {
+        guard let port = NWEndpoint.Port(rawValue: UInt16(peer.tcpPort)) else {
+            completion()
+            return
+        }
+        let endpoint = NWEndpoint.hostPort(host: NWEndpoint.Host(peer.address), port: port)
+        let connection = NWConnection(to: endpoint, using: .tcp)
+
+        let timeoutWork = DispatchWorkItem {
+            connection.cancel()
+            completion()
+        }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 10, execute: timeoutWork)
+
+        connection.stateUpdateHandler = { state in
+            switch state {
+            case .ready:
+                self.sendSnapshotOnConnection(connection, peer: peer, pairingCode: pairingCode) {
+                    timeoutWork.cancel()
+                    connection.cancel()
+                    completion()
+                }
+            case .failed(_):
+                timeoutWork.cancel()
+                connection.cancel()
+                completion()
+            case .cancelled:
+                timeoutWork.cancel()
+                completion()
+            default:
+                break
+            }
+        }
+        connection.start(queue: DispatchQueue.global())
+    }
+
+    private func sendSnapshotOnConnection(_ connection: NWConnection, peer: CachedPeer, pairingCode: String, completion: @escaping () -> Void) {
+        // Build a minimal sync snapshot from event log
+        guard let eventLogURL = ScreenTimeGuardianScreenTimeStorage.eventLogURL(),
+              let eventsData = try? Data(contentsOf: eventLogURL) else {
+            completion()
+            return
+        }
+
+        let defaults = ScreenTimeGuardianScreenTimeStorage.sharedDefaults()
+        let deviceId = defaults?.string(forKey: "screen_time_guardian.device_id") ?? "unknown"
+        let deviceName = defaults?.string(forKey: "screen_time_guardian.device_name") ?? "Unknown"
+
+        // Create a minimal sync payload
+        let payload: [String: Any] = [
+            "protocol_version": 1,
+            "type": "sync_snapshot",
+            "sender_device_id": deviceId,
+            "sender_device_name": deviceName,
+            "platform": "ios",
+            "pairing_code": pairingCode,
+            "events_hash": eventsData.base64EncodedString().prefix(64)
+        ]
+
+        guard let jsonData = try? JSONSerialization.data(withJSONObject: payload) else {
+            completion()
+            return
+        }
+
+        // Send length-prefixed frame
+        var length = UInt32(jsonData.count).bigEndian
+        var frame = Data(bytes: &length, count: 4)
+        frame.append(jsonData)
+
+        connection.send(content: frame, completion: .contentProcessed { error in
+            if error == nil {
+                // Read response (best-effort)
+                connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { _, _, _, _ in
+                    completion()
+                }
+            } else {
+                completion()
+            }
+        })
     }
 
     private func notificationContent(for event: DeviceActivityEvent.Name) -> UNMutableNotificationContent? {
@@ -174,12 +301,17 @@ final class ScreenTimeGuardianMonitorExtension: DeviceActivityMonitor {
         // So: actual segment = currentThreshold - lastRecordedThreshold.
         // This naturally excludes lock/sleep time because the system doesn't count them.
         //
-        // IMPORTANT: Both checkpoint AND reminder events must update the shared baseline.
-        // Otherwise, when checkpoint@6 and posture@6 fire at the same time,
-        // both would record segment = 6-4 = 2min, double-counting the same window.
+        // ONLY checkpoint events update the baseline. Reminder events (eye rest, posture)
+        // must not touch the baseline to avoid race conditions where a reminder fires
+        // before the checkpoint at the same threshold, causing the checkpoint to see
+        // delta=0 and lose the time segment.
         let thresholdMinutes = thresholdSeconds / 60
         let lastThresholdKey = "screen_time_guardian.last_recorded_threshold_minutes"
         let lastThreshold = defaults?.integer(forKey: lastThresholdKey) ?? 0
+
+        // Only checkpoint events record time segments.
+        // Reminder events (eye rest, posture) only trigger notifications — they don't add data.
+        if !isCheckpointEvent(event) { return }
 
         let actualSegmentSeconds: Int
         if lastThreshold > 0 {
@@ -195,14 +327,8 @@ final class ScreenTimeGuardianMonitorExtension: DeviceActivityMonitor {
             actualSegmentSeconds = thresholdSeconds
         }
 
-        // Update shared baseline for ALL events (prevents double-count when checkpoint and reminder fire at same threshold)
-        // This MUST happen before the checkpoint check, so that whichever event fires second
-        // at the same threshold sees the updated baseline and records delta=0 (skip).
+        // Update shared baseline — only checkpoint events write this.
         defaults?.set(thresholdMinutes, forKey: lastThresholdKey)
-
-        // Only checkpoint events record time segments.
-        // Reminder events (eye rest, posture) only trigger notifications — they don't add data.
-        if !isCheckpointEvent(event) { return }
 
         // Skip zero-duration segments (duplicate threshold events)
         guard actualSegmentSeconds > 0 else { return }

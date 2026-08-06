@@ -39,6 +39,9 @@ enum ScreenTimeGuardianScreenTimeStorage {
     static let notificationBaselineThresholdMinutesKey = "screen_time_guardian.notification_baseline_threshold_minutes"
     static let notificationBaselineAtUtcKey = "screen_time_guardian.notification_baseline_at_utc"
     static let eventLogFileName = "screen_time_events.json"
+    static let overtimeRepeatExtraMinutesKey = "screen_time_guardian.overtime_repeat_extra_minutes"
+    static let overtimeBaselineThresholdMinutesKey = "screen_time_guardian.overtime_baseline_threshold_minutes"
+    static let cachedPeersKey = "screen_time_guardian.cached_peers"
 
     static func sharedDefaults() -> UserDefaults? {
         UserDefaults(suiteName: appGroupIdentifier)
